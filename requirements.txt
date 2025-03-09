@@ -1,0 +1,32 @@
+# Web Framework
+fastapi
+uvicorn
+python-socketio
+websockets
+python-multipart
+gunicorn
+
+# Data Processing
+numpy
+pandas
+scikit-learn
+matplotlib
+seaborn
+pillow
+opencv-python
+mediapipe
+tqdm
+imgaug
+
+# Deep Learning
+tensorflow
+onnx
+tf2onnx
+
+# Text to Speech
+pyttsx3
+
+# Development Tools
+pytest
+black
+flake8

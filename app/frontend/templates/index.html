@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign Language Recognition</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <h1>Sign Language Recognition</h1>
+        
+        <!-- Status Panel -->
+        <div id="statusPanel" class="panel">
+            <h2>System Status</h2>
+            <p id="modelStatus">Model Status: Checking...</p>
+            <p id="cameraStatus">Camera Status: Not started</p>
+        </div>
+
+        <!-- Chrome Panel -->
+        <div id="chromePanel" class="panel warning" style="display: none;">
+            <p>⚠️ For best performance, please use Google Chrome on a local connection.</p>
+        </div>
+
+        <!-- Setup Panel -->
+        <div id="setupPanel" class="panel">
+            <h2>Controls</h2>
+            <div class="button-group">
+                <button id="startButton" class="primary-button">Start Recognition</button>
+                <button id="stopButton" class="secondary-button">Stop Recognition</button>
+                <button id="cameraToggle" class="secondary-button">Toggle Camera</button>
+            </div>
+            <div class="settings-group">
+                <label>
+                    <input type="checkbox" id="textToSpeechToggle">
+                    Enable Text-to-Speech
+                </label>
+                <select id="voiceSelect" style="display: none;">
+                    <option value="">Select a voice...</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="content">
+            <div class="video-container">
+                <video id="video" autoplay playsinline></video>
+                <canvas id="canvas" style="display: none;"></canvas>
+            </div>
+            <div class="prediction-container">
+                <h2>Prediction</h2>
+                <p id="prediction">Waiting to start...</p>
+                <p id="confidence"></p>
+            </div>
+        </div>
+
+        <!-- Warning Panel -->
+        <div id="warningPanel" class="panel warning" style="display: none;">
+            <p id="warningMessage"></p>
+        </div>
+
+        <!-- Error Panel -->
+        <div id="errorPanel" class="panel error" style="display: none;">
+            <p id="errorMessage"></p>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', path='/js/app.js') }}"></script>
+</body>
+</html> 
