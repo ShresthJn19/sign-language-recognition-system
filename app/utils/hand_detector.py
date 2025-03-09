@@ -13,7 +13,7 @@ class HandDetector:
     """
     def __init__(self, 
                  static_image_mode=False,
-                 max_num_hands=1,
+                 max_num_hands=2,
                  min_detection_confidence=0.7,
                  min_tracking_confidence=0.5):
         """
@@ -70,32 +70,34 @@ class HandDetector:
         
         return img, results
     
-    def extract_hand_region(self, img, results, padding=20, target_size=(224, 224)):
+    def extract_hand_region(self, img, hand_landmarks, padding=20, target_size=(224, 224)):
         """
-        Extract and preprocess the hand region from the image.
+        Extract and preprocess a single hand region from the image.
         
         Args:
             img: Input image (BGR format from OpenCV)
-            results: MediaPipe hand detection results
+            hand_landmarks: MediaPipe hand landmarks for a single hand
             padding: Additional padding around the hand region (pixels)
             target_size: Output size for the extracted hand region
             
         Returns:
-            Cropped and preprocessed hand image, or None if no hand is detected
+            Cropped and preprocessed hand image, or None if extraction fails
         """
-        if not results.multi_hand_landmarks:
+        if img is None or hand_landmarks is None:
             return None
         
         try:
             # Get image dimensions
             h, w, c = img.shape
             
-            # Get the bounding box for the first detected hand
-            hand_landmarks = results.multi_hand_landmarks[0]
+            # Validate landmark data
+            if not hand_landmarks.landmark:
+                return None
+            
+            # Find bounding box from landmarks
             x_min, y_min = w, h
             x_max, y_max = 0, 0
             
-            # Find bounding box coordinates
             for landmark in hand_landmarks.landmark:
                 x, y = int(landmark.x * w), int(landmark.y * h)
                 x_min = max(0, min(x_min, x))
@@ -109,33 +111,24 @@ class HandDetector:
             x_max = min(w, x_max + padding)
             y_max = min(h, y_max + padding)
             
-            # Ensure we have a valid bounding box
-            if x_min >= x_max or y_min >= y_max:
-                print("Invalid bounding box detected")
-                return None
-                
-            # Crop the image to the hand region
-            hand_img = img[y_min:y_max, x_min:x_max]
-            
-            # If bounding box is somehow invalid, return None
-            if hand_img.size == 0 or hand_img.shape[0] == 0 or hand_img.shape[1] == 0:
-                print("Hand image has invalid dimensions:", hand_img.shape if hasattr(hand_img, 'shape') else "no shape")
+            # Ensure we have a valid bounding box with minimum dimensions
+            if x_min >= x_max or y_min >= y_max or (x_max - x_min) < 10 or (y_max - y_min) < 10:
                 return None
             
-            # Resize to target size with explicit interpolation method
+            # Crop the hand region
+            hand_img = img[y_min:y_max, x_min:x_max].copy()
+            
+            # Verify we have a valid cropped image
+            if hand_img is None or hand_img.shape[0] == 0 or hand_img.shape[1] == 0:
+                return None
+            
+            # Resize to target size
             hand_img = cv2.resize(hand_img, target_size, interpolation=cv2.INTER_AREA)
             
-            # Verify the resized image has the correct dimensions
-            if hand_img.shape[0] != target_size[1] or hand_img.shape[1] != target_size[0]:
-                print(f"Resizing failed. Expected: {target_size}, Got: {hand_img.shape[:2]}")
-                return None
-                
             return hand_img
             
         except Exception as e:
-            print(f"Error extracting hand region: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"Error in extract_hand_region: {e}")
             return None
     
     def preprocess_for_model(self, hand_img):
@@ -175,46 +168,39 @@ class HandDetector:
             traceback.print_exc()
             return None
     
-    def process_frame(self, frame, draw=True, target_size=(224, 224)):
+    def process_frame(self, img, draw=True):
         """
-        Process a frame for hand detection and model inference.
+        Process a frame to find and draw hand landmarks.
         
         Args:
-            frame: Input frame from video feed (BGR format from OpenCV)
-            draw: Whether to draw hand landmarks on the frame
-            target_size: Target size for model input
+            img: Input image (BGR format from OpenCV)
+            draw: Whether to draw the hand landmarks on the image
             
         Returns:
-            frame: Original frame with hand landmarks drawn if draw=True
-            processed_img: Preprocessed hand image for model inference, or None if no hand detected
+            processed_img: Image with hand landmarks drawn if draw=True
+            hand_imgs: List of cropped hand images for recognition, or empty list if no hands detected
         """
-        # Verify frame is valid
-        if frame is None or frame.size == 0:
-            print("Error: Received empty frame in process_frame")
-            # Create a blank frame with error message
-            blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(blank_frame, "Invalid camera input", (50, 240), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-            return blank_frame, None
-            
-        try:
-            # Find hands in the frame
-            processed_frame, results = self.find_hands(frame, draw=draw)
-            
-            # Extract and preprocess hand region if detected
-            if results.multi_hand_landmarks:
-                hand_img = self.extract_hand_region(frame, results, target_size=target_size)
-                processed_img = self.preprocess_for_model(hand_img)
-                return processed_frame, processed_img
-            
-            return processed_frame, None
-            
-        except Exception as e:
-            print(f"Error in hand detection: {e}")
-            import traceback
-            traceback.print_exc()
-            # Return the original frame and None for processed image
-            return frame, None
+        if img is None:
+            print("Error: Empty image passed to process_frame")
+            return None, []
+        
+        # Find hands in the image
+        processed_img, results = self.find_hands(img, draw)
+        
+        # Extract hand regions for each detected hand
+        hand_imgs = []
+        
+        if results.multi_hand_landmarks:
+            for idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
+                try:
+                    # Extract hand region for this hand
+                    hand_img = self.extract_hand_region(img, hand_landmarks, padding=20)
+                    if hand_img is not None:
+                        hand_imgs.append(hand_img)
+                except Exception as e:
+                    print(f"Error extracting hand region for hand {idx}: {e}")
+        
+        return processed_img, hand_imgs
     
     def get_hand_landmarks(self, results):
         """

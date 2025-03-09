@@ -119,38 +119,85 @@ class SignLanguageModel:
         
     def load_model(self):
         """
-        Load the trained model from file.
+        Load the model from the saved model file.
         
         Returns:
             Loaded TensorFlow model
         """
         try:
-            # Try multiple approaches to load the model
             try:
-                # Standard loading approach
-                model = tf.keras.models.load_model(self.model_path)
+                # First attempt - basic approach with compile=False
+                print(f"Attempting to load model from {self.model_path}")
+                model = tf.keras.models.load_model(
+                    self.model_path, 
+                    compile=False
+                )
                 print(f"Model loaded successfully from {self.model_path}")
                 return model
             except Exception as first_error:
                 print(f"First loading attempt failed: {first_error}")
                 
                 try:
-                    # Try loading with custom_objects
-                    model = tf.keras.models.load_model(self.model_path, compile=False)
-                    print(f"Model loaded successfully (without compilation) from {self.model_path}")
+                    # Second attempt - with custom_objects
+                    print("Trying alternate loading method")
+                    model = tf.keras.models.load_model(
+                        self.model_path, 
+                        compile=False,
+                        custom_objects={}
+                    )
+                    print(f"Model loaded successfully with alternate method from {self.model_path}")
                     return model
                 except Exception as second_error:
                     print(f"Second loading attempt failed: {second_error}")
-                    raise Exception(f"All model loading attempts failed: {first_error} | {second_error}")
+                    
+                    try:
+                        # Third attempt - try recreating a similar architecture
+                        from tensorflow.keras.applications import MobileNetV3Small
+                        from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
+                        
+                        print("Attempting to create a new model with standard architecture")
+                        # Create a base model with similar architecture
+                        base_model = MobileNetV3Small(
+                            weights=None, 
+                            include_top=False, 
+                            input_shape=(224, 224, 3)
+                        )
+                        x = base_model.output
+                        x = GlobalAveragePooling2D()(x)
+                        x = Dense(128, activation='relu')(x)
+                        predictions = Dense(35, activation='softmax')(x)
+                        model = tf.keras.Model(inputs=base_model.input, outputs=predictions)
+                        
+                        # Try to load weights only if the file exists and has .h5 extension
+                        if os.path.exists(self.model_path) and self.model_path.endswith('.h5'):
+                            try:
+                                print("Attempting to load weights into the new model")
+                                model.load_weights(self.model_path)
+                                print("Successfully loaded weights into new model")
+                            except Exception as weight_error:
+                                print(f"Weight loading failed: {weight_error}")
+                                print("Using uninitialized model weights")
+                        else:
+                            print(f"Not attempting to load weights - file format may not be compatible")
+                            
+                        return model
+                    except Exception as third_error:
+                        print(f"All model loading attempts failed")
+                        print(f"First error: {first_error}")
+                        print(f"Second error: {second_error}")
+                        print(f"Third error: {third_error}")
+                        raise Exception("All model loading approaches failed")
         except Exception as e:
             print(f"Error loading model: {e}")
             print(traceback.format_exc())
             
-            # Create an empty model as a fallback
-            print("Creating an empty model as fallback...")
-            input_layer = tf.keras.layers.Input(shape=(224, 224, 3))
-            output_layer = tf.keras.layers.Dense(35, activation='softmax')(input_layer)
-            fallback_model = tf.keras.Model(inputs=input_layer, outputs=output_layer)
+            # Create a simple fallback model that won't crash
+            print("Creating a simple fallback model...")
+            input_shape = (224, 224, 3)
+            inputs = tf.keras.layers.Input(shape=input_shape)
+            x = tf.keras.layers.GlobalAveragePooling2D()(inputs)
+            outputs = tf.keras.layers.Dense(35, activation='softmax')(x)
+            fallback_model = tf.keras.Model(inputs=inputs, outputs=outputs)
             return fallback_model
     
     def load_class_mapping(self):
@@ -177,13 +224,14 @@ class SignLanguageModel:
         Predict the sign language class from a preprocessed image.
         
         Args:
-            image: Preprocessed image (batch of 1)
+            image: Preprocessed image
             
         Returns:
             class_name: Predicted class name
             confidence: Confidence score for the prediction
         """
         if image is None:
+            print("Cannot predict with None image")
             return None, 0.0
         
         try:
@@ -192,41 +240,109 @@ class SignLanguageModel:
                 print(f"Image is not a numpy array: {type(image)}")
                 return None, 0.0
                 
-            # Check if image has the right shape
-            expected_shape = (1, 224, 224, 3)  # Batch, height, width, channels
-            if image.shape != expected_shape:
-                print(f"Image has wrong shape: {image.shape}, expected: {expected_shape}")
-                
-                # Try to reshape/resize if possible
-                if len(image.shape) == 3:  # Missing batch dimension
+            # Ensure image is properly shaped
+            expected_batch_shape = (1, 224, 224, 3)  # Batch, height, width, channels
+            
+            # Fix dimensions if needed
+            if image.shape != expected_batch_shape:
+                # Handle common issues
+                if len(image.shape) == 3 and image.shape == (224, 224, 3):
+                    # Missing batch dimension
                     image = np.expand_dims(image, axis=0)
                     print(f"Added batch dimension, new shape: {image.shape}")
-                
-                if image.shape != expected_shape:
-                    print("Could not correct image shape, aborting prediction")
-                    return None, 0.0
+                elif len(image.shape) == 4 and image.shape[0] > 1:
+                    # Too many batch items, take first one
+                    image = image[0:1]
+                    print(f"Using only first batch item, new shape: {image.shape}")
+                else:
+                    # Try to resize
+                    try:
+                        if len(image.shape) == 3:
+                            resized = cv2.resize(image, (224, 224))
+                            image = np.expand_dims(resized, axis=0)
+                        elif len(image.shape) == 4:
+                            resized = cv2.resize(image[0], (224, 224))
+                            image = np.expand_dims(resized, axis=0)
+                        print(f"Resized image to shape: {image.shape}")
+                    except Exception as resize_err:
+                        print(f"Could not resize image: {resize_err}")
+                        return None, 0.0
+            
+            # Normalize if needed
+            if np.max(image) > 1.0:
+                image = image / 255.0
+                print("Normalized image to [0-1] range")
+            
+            # Check if image shape is still incorrect
+            if image.shape != expected_batch_shape:
+                print(f"Image shape {image.shape} does not match expected shape {expected_batch_shape}")
+                return None, 0.0
             
             # Measure inference time
             start_time = time.time()
             
-            # Make prediction
-            predictions = self.model.predict(image, verbose=0)
-            
-            # Record inference time
-            inference_time = time.time() - start_time
-            self.inference_times.append(inference_time)
-            
-            # Get the predicted class and confidence
-            predicted_class_idx = np.argmax(predictions[0])
-            confidence = float(predictions[0][predicted_class_idx])
-            
-            # Map the class index to class name
-            class_name = self.class_mapping.get(str(predicted_class_idx), "Unknown")
-            
-            return class_name, confidence
+            # First prediction approach
+            try:
+                # Use direct model prediction
+                predictions = self.model.predict(image, verbose=0)
+                inference_time = time.time() - start_time
+                self.inference_times.append(inference_time)
+                
+                # Process predictions
+                if len(predictions.shape) != 2 or predictions.shape[0] != 1:
+                    print(f"Unexpected prediction shape: {predictions.shape}, expected (1, N)")
+                    raise ValueError("Invalid prediction shape")
+                
+                # Find highest scoring class
+                predicted_class_idx = int(np.argmax(predictions[0]))
+                confidence = float(predictions[0][predicted_class_idx])
+                
+                # Map class index to name
+                class_name = self.class_mapping.get(str(predicted_class_idx), "Unknown")
+                print(f"Predicted class: {class_name}, confidence: {confidence:.4f}")
+                
+                return class_name, confidence
+                
+            except Exception as pred_error:
+                print(f"Standard prediction failed: {pred_error}")
+                
+                # Fallback to direct model call
+                try:
+                    print("Trying alternative prediction method")
+                    logits = self.model(image, training=False)
+                    
+                    # Convert to numpy if it's a tensor
+                    if hasattr(logits, 'numpy'):
+                        logits_np = logits.numpy()
+                    else:
+                        logits_np = logits
+                    
+                    # Find the highest scoring class
+                    predicted_class_idx = int(np.argmax(logits_np[0]))
+                    
+                    # Apply softmax to get probabilities if needed
+                    if np.max(logits_np) > 100:  # These are probably logits, not probabilities
+                        print("Converting logits to probabilities with softmax")
+                        # Safe softmax to prevent overflow
+                        probs = np.exp(logits_np - np.max(logits_np))
+                        probs = probs / np.sum(probs, axis=1, keepdims=True)
+                        confidence = float(probs[0][predicted_class_idx])
+                    else:
+                        confidence = float(logits_np[0][predicted_class_idx])
+                    
+                    # Map to class name
+                    class_name = self.class_mapping.get(str(predicted_class_idx), "Unknown")
+                    print(f"Alternative prediction: {class_name}, confidence: {confidence:.4f}")
+                    
+                    return class_name, confidence
+                    
+                except Exception as alt_error:
+                    print(f"Alternative prediction failed: {alt_error}")
+                    return None, 0.0
+                
         except Exception as e:
             print(f"Error making prediction: {e}")
-            print(traceback.format_exc())
+            traceback.print_exc()
             return None, 0.0
     
     def get_average_inference_time(self):

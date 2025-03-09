@@ -1,106 +1,119 @@
 /**
- * app.js - Frontend JavaScript for the sign language recognition application
- * Handles webcam access, WebSocket communication, and UI updates
+ * Sign Language Recognition - Frontend JavaScript
  */
-
-// DOM Elements
-const videoElement = document.getElementById('video');
-const canvasElement = document.getElementById('canvas');
-const overlayElement = document.getElementById('overlay');
-const loadingElement = document.getElementById('loading');
-const errorElement = document.getElementById('error');
-const predictionElement = document.getElementById('prediction');
-const confidenceBarElement = document.getElementById('confidenceBar');
-const confidenceValueElement = document.getElementById('confidenceValue');
-const textDisplayElement = document.getElementById('textDisplay');
-const thresholdValueElement = document.getElementById('thresholdValue');
-const confidenceThresholdElement = document.getElementById('confidenceThreshold');
-const toggleCameraButton = document.getElementById('toggleCamera');
-const toggleHandLandmarksButton = document.getElementById('toggleHandLandmarks');
-const clearTextButton = document.getElementById('clearText');
-const speakTextButton = document.getElementById('speakText');
-const autoSpeakCheckbox = document.getElementById('autoSpeak');
-const voiceSelectElement = document.getElementById('voiceSelect');
-const setupPanelElement = document.getElementById('setupPanel');
-const chromeLocalAccessPanelElement = document.getElementById('chromeLocalAccessPanel');
 
 // Application state
 const state = {
+    // Camera state
     cameraActive: false,
-    socket: null,
-    showHandLandmarks: true,
-    confidenceThreshold: 0.7,
-    currentRecognition: {
-        text: null,
-        confidence: 0,
-        time: 0
-    },
-    recognizedText: [],
-    videoWidth: 640,
-    videoHeight: 480,
+    videoStream: null,
+    
+    // Recognition state
+    recognizedSigns: [],
+    
+    // Text-to-speech state
+    ttsEnabled: true,
+    selectedVoice: null,
+    availableVoices: [],
+    
+    // UI state
+    confidenceThreshold: 0.65,
+    
+    // System state
+    modelLoaded: false,
+    
+    // Processing state
+    processingActive: false,
     processingFrame: false,
-    reconnectAttempts: 0,
-    maxReconnectAttempts: 5,
-    reconnectInterval: 2000, // ms
-    systemStatus: {
-        modelLoaded: false,
-        handDetectorLoaded: false,
-        ttsLoaded: false
-    },
-    setupComplete: false,
-    retryCount: 0,
-    maxRetries: 3,
-    isChrome: /Chrome/.test(navigator.userAgent) && !/Edge/.test(navigator.userAgent),
-    isLocalHost: window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.protocol === 'file:',
-    processingActive: false
+    lastFrameTime: 0,
+    frameSendInterval: 100, // ms between frames
+};
+
+// DOM Elements
+const elements = {
+    // Status elements
+    modelStatus: document.getElementById('modelStatus'),
+    cameraStatus: document.getElementById('cameraStatus'),
+    
+    // Video elements
+    video: document.getElementById('video'),
+    canvas: document.getElementById('canvas'),
+    videoOverlay: document.getElementById('video-overlay'),
+    
+    // Control buttons
+    cameraToggle: document.getElementById('cameraToggle'),
+    fullscreenToggle: document.getElementById('fullscreenToggle'),
+    
+    // Prediction elements
+    prediction: document.getElementById('prediction'),
+    confidenceBar: document.getElementById('confidenceBar'),
+    confidenceValue: document.getElementById('confidenceValue'),
+    hand1: document.getElementById('hand1'),
+    hand2: document.getElementById('hand2'),
+    
+    // Text-to-speech elements
+    textOutput: document.getElementById('textOutput'),
+    autoSpeakToggle: document.getElementById('autoSpeakToggle'),
+    voiceSelect: document.getElementById('voiceSelect'),
+    speakButton: document.getElementById('speakButton'),
+    clearTextButton: document.getElementById('clearTextButton'),
+    
+    // Notification area
+    notifications: document.getElementById('notifications')
 };
 
 // Initialize the application
 async function init() {
-    console.log("Initializing application...");
+    console.log('Initializing application...');
     
-    // Check if we're using Chrome on a local connection
-    updateChromePanelVisibility();
+    // Check browser compatibility first
+    checkBrowserCompatibility();
     
     // Check system status
-    try {
-        await checkSystemStatus();
-    } catch (error) {
-        console.error("Error checking system status:", error);
-        showError("Unable to connect to the server. Please make sure the server is running.");
-        return;
-    }
+    await checkSystemStatus();
+    
+    // Initialize text-to-speech
+    initTextToSpeech();
     
     // Set up event listeners
     setupEventListeners();
-    
-    // Toggle visibility of setup panel based on model status
-    updateSetupPanelVisibility();
-    
-    // Load available voices
-    loadAvailableVoices();
-    
-    // Delay the camera start to give the backend time to initialize
-    setTimeout(async () => {
-        // Start the webcam
-        await startCamera();
-        
-        // Start frame processing if camera started successfully
-        if (state.cameraActive) {
-            startProcessing();
-        }
-    }, 1000);
 }
 
-// Update Chrome panel visibility
-function updateChromePanelVisibility() {
-    if (chromeLocalAccessPanelElement) {
-        if (state.isChrome && state.isLocalHost) {
-            chromeLocalAccessPanelElement.classList.remove('hidden');
+// Check browser compatibility
+function checkBrowserCompatibility() {
+    // Check if running in a secure context (needed for camera in some browsers)
+    const isSecureContext = window.isSecureContext || 
+                           location.protocol === 'https:' || 
+                           location.hostname === 'localhost' || 
+                           location.hostname === '127.0.0.1';
+                           
+    if (!isSecureContext) {
+        showNotification('For security reasons, camera access requires HTTPS. Some features may not work.', 'warning');
+    }
+    
+    // Check if MediaDevices API is available directly
+    const hasMediaDevices = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    if (!hasMediaDevices) {
+        // Check if we can use a polyfill
+        const hasLegacyAPI = !!(navigator.getUserMedia || 
+                              navigator.webkitGetUserMedia || 
+                              navigator.mozGetUserMedia || 
+                              navigator.msGetUserMedia);
+        
+        if (hasLegacyAPI) {
+            showNotification('Using legacy camera API. For best experience, use Chrome or Firefox.', 'warning');
         } else {
-            chromeLocalAccessPanelElement.classList.add('hidden');
+            showNotification('Your browser does not support camera access. Please try Chrome or Firefox.', 'error');
+            // Disable camera button
+            if (elements.cameraToggle) {
+                elements.cameraToggle.disabled = true;
+                elements.cameraToggle.title = 'Camera not supported in this browser';
+            }
         }
     }
+    
+    // Log user agent for debugging
+    console.log('Browser:', navigator.userAgent);
 }
 
 // Check system status
@@ -112,682 +125,498 @@ async function checkSystemStatus() {
         }
         
         const data = await response.json();
-        state.systemStatus = {
-            modelLoaded: data.model_loaded,
-            handDetectorLoaded: data.hand_detector_loaded,
-            ttsLoaded: data.tts_loaded
-        };
         
-        console.log("System status:", state.systemStatus);
-        state.setupComplete = true;
-        
-        // Display warning if model is not loaded
-        if (!state.systemStatus.modelLoaded) {
-            showWarning("Sign language model not loaded. Recognition features will not work. Please train the model first using 'python app/models/train_model.py'");
-        }
+        // Update model status
+        state.modelLoaded = data.model_loaded;
+        updateModelStatus(data.model_loaded);
         
         return data;
     } catch (error) {
-        console.error("Error checking system status:", error);
-        state.setupComplete = false;
+        console.error('Error checking system status:', error);
+        showNotification('Error connecting to the server. Please make sure it is running.', 'error');
         throw error;
     }
 }
 
-// Update setup panel visibility based on model status
-function updateSetupPanelVisibility() {
-    if (setupPanelElement) {
-        if (!state.systemStatus.modelLoaded) {
-            setupPanelElement.classList.remove('hidden');
-        } else {
-            setupPanelElement.classList.add('hidden');
+// Update model status display
+function updateModelStatus(isLoaded) {
+    if (elements.modelStatus) {
+        elements.modelStatus.innerHTML = isLoaded ? 
+            '<i class="fas fa-brain"></i> <span>Model: Loaded</span>' : 
+            '<i class="fas fa-brain"></i> <span>Model: Not loaded</span>';
+        
+        if (!isLoaded) {
+            showNotification('Sign language model not loaded. Recognition will not work.', 'warning');
         }
     }
 }
 
-// Show a warning message
-function showWarning(message) {
-    const warningElement = document.createElement('div');
-    warningElement.className = 'warning';
-    warningElement.innerHTML = `<p>${message}</p>`;
+// Update camera status display
+function updateCameraStatus(isActive) {
+    if (elements.cameraStatus) {
+        elements.cameraStatus.innerHTML = isActive ? 
+            '<i class="fas fa-video"></i> <span>Camera: Active</span>' : 
+            '<i class="fas fa-video-slash"></i> <span>Camera: Off</span>';
+    }
     
-    // Add to overlay
-    overlayElement.classList.remove('hidden');
-    overlayElement.innerHTML = '';
-    overlayElement.appendChild(warningElement);
-    
-    // Hide warning after 10 seconds
-    setTimeout(() => {
-        if (document.contains(warningElement)) {
-            overlayElement.classList.add('hidden');
-        }
-    }, 10000);
-}
-
-// Show an error message
-function showError(message) {
-    // Use innerHTML to allow HTML formatting in error messages
-    errorElement.innerHTML = message;
-    overlayElement.classList.remove('hidden');
-    loadingElement.classList.add('hidden');
-    errorElement.classList.remove('hidden');
+    // Update camera button text
+    if (elements.cameraToggle) {
+        elements.cameraToggle.innerHTML = isActive ? 
+            '<i class="fas fa-video-slash"></i> <span>Stop Camera</span>' : 
+            '<i class="fas fa-video"></i> <span>Start Camera</span>';
+    }
 }
 
 // Set up event listeners
 function setupEventListeners() {
-    // Start button
-    document.getElementById('startButton').addEventListener('click', async () => {
-        if (!state.cameraActive) {
-            await startCamera();
-            if (state.cameraActive) {
-                startProcessing();
-            }
-        } else {
-            startProcessing();
-        }
-    });
-
-    // Stop button
-    document.getElementById('stopButton').addEventListener('click', () => {
-        stopProcessing();
-    });
-
-    // Camera toggle button
-    document.getElementById('cameraToggle').addEventListener('click', async () => {
-        if (state.cameraActive) {
-            stopProcessing();
-            stopCamera();
-        } else {
-            await startCamera();
-            if (state.cameraActive) {
-                startProcessing();
-            }
-        }
-    });
+    // Camera toggle
+    if (elements.cameraToggle) {
+        elements.cameraToggle.addEventListener('click', toggleCamera);
+    }
     
-    // Toggle hand landmarks button
-    toggleHandLandmarksButton.addEventListener('click', () => {
-        state.showHandLandmarks = !state.showHandLandmarks;
-        toggleHandLandmarksButton.textContent = state.showHandLandmarks ? 'Hide Landmarks' : 'Show Landmarks';
-    });
+    // Fullscreen toggle
+    if (elements.fullscreenToggle) {
+        elements.fullscreenToggle.addEventListener('click', toggleFullscreen);
+    }
     
-    // Clear text button
-    clearTextButton.addEventListener('click', () => {
-        state.recognizedText = [];
-        updateTextDisplay();
-    });
+    // Text-to-speech toggle
+    if (elements.autoSpeakToggle) {
+        elements.autoSpeakToggle.addEventListener('change', e => {
+            state.ttsEnabled = e.target.checked;
+        });
+    }
     
-    // Speak text button
-    speakTextButton.addEventListener('click', () => {
-        speakCurrentText();
-    });
-    
-    // Confidence threshold slider
-    confidenceThresholdElement.addEventListener('input', (e) => {
-        state.confidenceThreshold = parseFloat(e.target.value);
-        thresholdValueElement.textContent = state.confidenceThreshold.toFixed(1);
-    });
-    
-    // Voice selection dropdown
-    voiceSelectElement.addEventListener('change', (e) => {
-        const voiceId = e.target.value;
-        if (voiceId) {
-            setVoice(voiceId);
-        }
-    });
-    
-    // Window resize event
-    window.addEventListener('resize', adjustCanvasSize);
-}
-
-// Start the webcam
-async function startCamera() {
-    try {
-        // Show loading animation
-        overlayElement.classList.remove('hidden');
-        loadingElement.classList.remove('hidden');
-        errorElement.classList.add('hidden');
+    // Voice selection
+    if (elements.voiceSelect) {
+        elements.voiceSelect.addEventListener('change', e => {
+        // Get user media
+        const constraints = { 
+            video: { 
+                width: { ideal: 640 }, 
+                height: { ideal: 480 },
+                facingMode: 'user'
+            },
+            audio: false 
+        };
+                    height: { ideal: 480 },
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                audio: false 
+            },
+            // Attempt 2: Any video
+            { 
+                video: true,
+        // Set video source
+        elements.video.srcObject = stream;
         
-        // Ensure MediaDevices API is accessible
-        if (!navigator.mediaDevices) {
-            console.error("MediaDevices API not available - trying to add polyfill");
-            // Attempt to recreate the mediaDevices object (backup approach)
-            navigator.mediaDevices = {};
-            
-            // Add getUserMedia if not available
-            if (!navigator.mediaDevices.getUserMedia) {
-                navigator.mediaDevices.getUserMedia = function(constraints) {
-                    var getUserMedia = navigator.webkitGetUserMedia || 
-                                      navigator.mozGetUserMedia || 
-                                      navigator.msGetUserMedia;
-                    
-                    if (!getUserMedia) {
-                        throw new Error("Camera API not available in your browser");
-                    }
-                    
-                    return new Promise(function(resolve, reject) {
-                        getUserMedia.call(navigator, constraints, resolve, reject);
-                    });
-                };
-            }
-        }
-        
-        console.log("Attempting to access camera...");
-        
-        // Request webcam access with multiple attempts
-        let stream = null;
-        let error = null;
-        
-        // First attempt: Try with ideal dimensions
-        try {
-            console.log("Camera attempt 1: Ideal dimensions");
-            stream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    width: { ideal: state.videoWidth },
-                    height: { ideal: state.videoHeight }
-                },
-                audio: false
-            });
-        } catch (err) {
-            console.warn("First camera attempt failed:", err);
-            error = err;
-            
-            // Second attempt: Try with minimal constraints
-            try {
-                console.log("Camera attempt 2: Basic video");
-                stream = await navigator.mediaDevices.getUserMedia({
-                    video: true,
-                    audio: false
-                });
-            } catch (err2) {
-                console.warn("Second camera attempt failed:", err2);
-                error = err2;
-                
-                // Third attempt: Try using deprecated API directly (for older Chrome)
-                try {
-                    console.log("Camera attempt 3: Legacy API");
-                    if (navigator.webkitGetUserMedia) {
-                        stream = await new Promise((resolve, reject) => {
-                            navigator.webkitGetUserMedia(
-                                { video: true, audio: false },
-                                resolve,
-                                reject
-                            );
-                        });
-                    } else {
-                        throw new Error("Legacy API not available");
-                    }
-                } catch (err3) {
-                    console.error("All camera access attempts failed");
-                    error = err3;
-                }
-            }
-        }
-        
-        if (!stream) {
-            throw error || new Error("Could not access camera");
-        }
-        
-        console.log("Camera access successful!");
-        
-        // Attach stream to video element
-        videoElement.srcObject = stream;
-        state.cameraActive = true;
-        toggleCameraButton.textContent = 'Stop Camera';
-        
-        // Wait for video to be ready
+                audio: false 
         await new Promise(resolve => {
-            videoElement.onloadedmetadata = () => {
-                resolve();
+            // Attempt 3: Lower resolution
+                elements.video.play().then(resolve);
+            }
+        let lastError = null;
+        for (const constraint of constraints) {
+            try {
+                console.log('Trying camera with constraints:', constraint);
+                stream = await navigator.mediaDevices.getUserMedia(constraint);
+                if (stream) {
+                    console.log('Camera access successful with constraints:', constraint);
+                    break;
+                }
+            } catch (error) {
+                console.warn('Camera access failed with constraints:', constraint, error);
+                lastError = error;
+            }
+        }
+        
+        // If all attempts failed
+        elements.videoOverlay.style.display = 'none';
+            throw lastError || new Error('Could not access camera after multiple attempts');
+        }
+        // Show error notification
+        showNotification(`Camera access error: ${error.message}`, 'error');
             };
             
             // Fallback if onloadedmetadata doesn't fire
-            setTimeout(resolve, 1000);
+            setTimeout(resolve, 2000);
         });
         
-        // Set canvas size
-        adjustCanvasSize();
+        // Show canvas, hide overlay
+        elements.videoOverlay.style.display = 'none';
+        elements.canvas.style.display = 'block';
         
-        // Hide loading overlay
-        overlayElement.classList.add('hidden');
+        // Update UI
+        updateCameraStatus(true);
+        elements.cameraToggle.disabled = false;
         
         // Start processing frames
-        if (state.socket && state.socket.readyState === WebSocket.OPEN) {
-            processFrame();
-        }
+        state.processingActive = true;
+        processVideoFrames();
+        
     } catch (error) {
-        console.error('Error accessing webcam:', error);
+        console.error('Error accessing camera:', error);
+        elements.videoOverlay.innerHTML = `<p>Camera error: ${error.message}</p><p>Please check browser permissions</p>`;
+        elements.cameraToggle.disabled = false;
         
-        // Construct a helpful error message based on the error
-        let errorMessage = "Camera access denied. ";
+        // Show detailed error notification
+        let errorMessage = 'Camera access error: ' + error.message;
         
-        // Check for specific Chrome error messages
+        // Provide more helpful messages for common errors
         if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
-            errorMessage = `<p>Camera access blocked. Please check your browser settings:</p>
-                <ol>
-                    <li>Click the lock/site settings icon in your address bar</li>
-                    <li>Make sure Camera permission is set to "Allow"</li>
-                    <li>Reload the page and try again</li>
-                </ol>
-                <p>If running locally, try using a development server:</p>
-                <pre>python -m http.server 8000</pre>`;
-        } else if (error.message && error.message.includes("MediaDevices")) {
-            errorMessage = `<p>Browser API error: ${error.message}</p>
-                <p>Try using a modern browser like Chrome, Firefox, or Edge.</p>`;
-        } else {
-            errorMessage += `<p>${error.message}</p>`;
+            errorMessage = 'Camera permission denied. Please allow camera access in your browser settings.';
+        } else if (error.name === 'NotFoundError') {
+            errorMessage = 'No camera found. Please connect a camera and try again.';
+        } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+            errorMessage = 'Camera is in use by another application or not readable.';
+        } else if (error.name === 'OverconstrainedError') {
+            errorMessage = 'Camera cannot satisfy the requested constraints.';
+        } else if (error.name === 'TypeError' && error.message.includes('getUserMedia')) {
+            errorMessage = 'Browser security policy is preventing camera access. Try using HTTPS or localhost.';
         }
         
-        // Show error message
-        showError(errorMessage);
-        
-        state.cameraActive = false;
-        toggleCameraButton.textContent = 'Retry Camera';
+        showNotification(errorMessage, 'error');
     }
 }
 
-// Stop the webcam
+// Stop camera
 function stopCamera() {
-    if (videoElement.srcObject) {
-        // Stop all tracks
-        videoElement.srcObject.getTracks().forEach(track => track.stop());
-        videoElement.srcObject = null;
+    // Stop all tracks
+    if (state.videoStream) {
+        state.videoStream.getTracks().forEach(track => track.stop());
+        state.videoStream = null;
     }
     
+    // Update state
     state.cameraActive = false;
-    toggleCameraButton.textContent = 'Start Camera';
-    
-    // Show overlay
-    overlayElement.classList.remove('hidden');
-    loadingElement.classList.add('hidden');
-    errorElement.classList.add('hidden');
-    
-    // Clear canvas
-    const ctx = canvasElement.getContext('2d');
-    ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-}
-
-// Adjust canvas size to match video dimensions
-function adjustCanvasSize() {
-    const videoContainer = videoElement.parentElement;
-    const containerWidth = videoContainer.clientWidth;
-    const containerHeight = videoContainer.clientHeight;
-    
-    canvasElement.width = containerWidth;
-    canvasElement.height = containerHeight;
-}
-
-// Connect to the WebSocket server
-function connectWebSocket() {
-    // Close existing socket if any
-    if (state.socket) {
-        if (state.socket.readyState === WebSocket.OPEN || 
-            state.socket.readyState === WebSocket.CONNECTING) {
-            try {
-                state.socket.close();
-            } catch (e) {
-                console.error("Error closing existing socket:", e);
-            }
-        }
-        state.socket = null;
-    }
-    
-    // Create new WebSocket connection
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-    
-    console.log(`Connecting to WebSocket at ${wsUrl}`);
-    
-    try {
-        state.socket = new WebSocket(wsUrl);
-    } catch (error) {
-        console.error("Error creating WebSocket:", error);
-        showError(`Failed to create WebSocket connection: ${error.message}`);
-        return;
-    }
-    
-    // Socket open event
-    state.socket.onopen = () => {
-        console.log('WebSocket connection established');
-        state.reconnectAttempts = 0;
-        
-        // Start processing frames if camera is active
-        if (state.cameraActive) {
-            processFrame();
-        }
-    };
-    
-    // Socket message event
-    state.socket.onmessage = (event) => {
-        try {
-            if (typeof event.data !== 'string') {
-                console.warn("Received non-string data from server:", event.data);
-                state.processingFrame = false;
-                setTimeout(processFrame, 100);
-                return;
-            }
-            
-            const data = JSON.parse(event.data);
-            
-            // Handle error message
-            if (data.error) {
-                console.error('Server error:', data.error);
-                showWarning(`Server error: ${data.error}`);
-                
-                // Continue anyway
-                state.processingFrame = false;
-                setTimeout(processFrame, 100);
-                return;
-            }
-            
-            // Update the UI with the received prediction
-            updatePrediction(data);
-            
-            // Continue processing frames
-            state.processingFrame = false;
-            setTimeout(processFrame, 50);
-        } catch (error) {
-            console.error("Error parsing WebSocket message:", error, "Raw data:", event.data);
-            state.processingFrame = false;
-            setTimeout(processFrame, 500);
-        }
-    };
-    
-    // Socket close event
-    state.socket.onclose = (event) => {
-        console.log(`WebSocket connection closed: Code ${event.code}, Reason: ${event.reason || 'No reason provided'}`);
-        
-        // Attempt to reconnect
-        if (state.reconnectAttempts < state.maxReconnectAttempts) {
-            state.reconnectAttempts++;
-            console.log(`Reconnecting (${state.reconnectAttempts}/${state.maxReconnectAttempts})...`);
-            
-            // Increase delay with each attempt (backoff)
-            const delay = state.reconnectInterval * Math.pow(1.5, state.reconnectAttempts - 1);
-            setTimeout(() => {
-                connectWebSocket();
-            }, delay);
-        } else {
-            console.error('Maximum reconnect attempts reached');
-            showError("Connection to server lost. Please reload the page to reconnect.");
-        }
-    };
-    
-    // Socket error event
-    state.socket.onerror = (error) => {
-        console.error('WebSocket error:', error);
-    };
-}
-
-// Connect to the server and start processing frames
-function startProcessing() {
-    console.log("Starting frame processing via HTTP polling");
-    
-    // Set flag to indicate processing is active
-    state.processingActive = true;
-    
-    // Start the polling loop
-    processFrame();
-}
-
-// Stop processing frames
-function stopProcessing() {
-    console.log("Stopping frame processing");
     state.processingActive = false;
+    
+    // Clear video source
+    elements.video.srcObject = null;
+    
+    // Update UI
+    updateCameraStatus(false);
+    elements.videoOverlay.style.display = 'flex';
+    elements.videoOverlay.innerHTML = '<p>Camera stopped</p>';
 }
 
-// Process a single frame
-async function processFrame() {
-    // Skip if already processing a frame or processing is not active
-    if (state.processingFrame || !state.processingActive || !state.cameraActive) {
+// Toggle fullscreen
+function toggleFullscreen() {
+    const videoContainer = document.querySelector('.video-container');
+    
+    if (!document.fullscreenElement) {
+        if (videoContainer.requestFullscreen) {
+            videoContainer.requestFullscreen();
+        } else if (videoContainer.webkitRequestFullscreen) {
+            videoContainer.webkitRequestFullscreen();
+        } else if (videoContainer.msRequestFullscreen) {
+            videoContainer.msRequestFullscreen();
+        }
+        elements.fullscreenToggle.innerHTML = '<i class="fas fa-compress"></i> <span>Exit Fullscreen</span>';
+    } else {
+        if (document.exitFullscreen) {
+            document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) {
+            document.webkitExitFullscreen();
+        } else if (document.msExitFullscreen) {
+            document.msExitFullscreen();
+        }
+        elements.fullscreenToggle.innerHTML = '<i class="fas fa-expand"></i> <span>Fullscreen</span>';
+    }
+}
+
+// Process video frames
+async function processVideoFrames() {
+    if (!state.cameraActive || !state.processingActive) {
         return;
     }
     
-    state.processingFrame = true;
+    const now = Date.now();
     
-    try {
-        // Check if video element is ready
-        if (!videoElement.srcObject || 
-            videoElement.videoWidth === 0 || 
-            videoElement.videoHeight === 0) {
-            state.processingFrame = false;
-            setTimeout(processFrame, 500);
-            return;
-        }
+    // Limit frame rate to avoid overwhelming the server
+    if (!state.processingFrame && now - state.lastFrameTime > state.frameSendInterval) {
+        state.processingFrame = true;
+        state.lastFrameTime = now;
         
-        // Draw video frame to canvas
-        const ctx = canvasElement.getContext('2d');
-        ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
-        
-        // Get the canvas data as base64 image - with lower quality to reduce size
         try {
-            const imageData = canvasElement.toDataURL('image/jpeg', 0.6);
+            const ctx = elements.canvas.getContext('2d');
             
-            // Send the image data to the server using fetch
+            // Set canvas dimensions to match video
+            elements.canvas.width = elements.video.videoWidth;
+            elements.canvas.height = elements.video.videoHeight;
+            
+            // Draw the current frame to the canvas
+            ctx.drawImage(elements.video, 0, 0, elements.canvas.width, elements.canvas.height);
+            
+            // Get the frame as a base64 image
+            const imageData = elements.canvas.toDataURL('image/jpeg', 0.7); // Reduced quality to decrease payload size
+            
+            // Send the frame to the server
             const response = await fetch('/api/process-frame', {
                 method: 'POST',
                 body: imageData,
                 headers: {
                     'Content-Type': 'text/plain',
-                },
+                }
             });
             
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                throw new Error(`Server returned ${response.status}: ${response.statusText}`);
             }
             
             const data = await response.json();
             
-            // Handle error message
             if (data.error) {
                 console.error('Server error:', data.error);
-                showWarning(`Server error: ${data.error}`);
+            } else {
+                // Update the canvas with the processed image
+                const img = new Image();
+                img.onload = () => {
+                    ctx.drawImage(img, 0, 0, elements.canvas.width, elements.canvas.height);
+                };
+                img.src = data.image;
                 
-                // Continue anyway
-                state.processingFrame = false;
-                if (state.processingActive) {
-                    setTimeout(processFrame, 500);
-                }
-                return;
-            }
-            
-            // Update the UI with the received prediction
-            updatePrediction(data);
-            
-            // Continue processing frames
-            state.processingFrame = false;
-            if (state.processingActive) {
-                setTimeout(processFrame, 50);
+                // Update predictions
+                updatePredictions(data.predictions);
             }
         } catch (error) {
             console.error('Error processing frame:', error);
+        } finally {
             state.processingFrame = false;
-            if (state.processingActive) {
-                setTimeout(processFrame, 1000);
+        }
+    }
+    
+    // Schedule next frame
+    requestAnimationFrame(processVideoFrames);
+}
+
+// Update predictions display
+function updatePredictions(predictions) {
+    // Clear previous display
+    elements.hand1.querySelector('.hand-prediction').textContent = '-';
+    elements.hand2.querySelector('.hand-prediction').textContent = '-';
+    
+    // No predictions
+    if (!predictions || predictions.length === 0) {
+        elements.prediction.textContent = 'No hands detected';
+        elements.confidenceBar.style.width = '0%';
+        elements.confidenceValue.textContent = '0%';
+        return;
+    }
+    
+    // Process each prediction
+    predictions.forEach((pred, index) => {
+        const handElement = index === 0 ? elements.hand1 : elements.hand2;
+        
+        if (handElement) {
+            handElement.querySelector('.hand-prediction').textContent = 
+                `${pred.prediction} (${Math.round(pred.confidence * 100)}%)`;
+        }
+        
+        // Use first hand as main prediction
+        if (index === 0) {
+            // Update main prediction display
+            elements.prediction.textContent = pred.prediction;
+            
+            // Update confidence display
+            const confidencePercent = Math.round(pred.confidence * 100);
+            elements.confidenceBar.style.width = `${confidencePercent}%`;
+            elements.confidenceValue.textContent = `${confidencePercent}%`;
+            
+            // Add to recognized signs if confidence is high enough
+            if (pred.confidence >= state.confidenceThreshold) {
+                addRecognizedSign(pred.prediction);
+            }
+        }
+    });
+}
+
+// Add a recognized sign to the output
+function addRecognizedSign(sign) {
+    // Check if we already have this sign as the last recognized
+    if (state.recognizedSigns.length > 0 && 
+        state.recognizedSigns[state.recognizedSigns.length - 1] === sign) {
+        return; // Skip duplicate consecutive signs
+    }
+    
+    // Add the sign
+    state.recognizedSigns.push(sign);
+    
+    // Update display
+    updateTextOutput();
+    
+    // Speak if enabled
+    if (state.ttsEnabled) {
+        speakText(sign);
+    }
+}
+
+// Update text output display
+function updateTextOutput() {
+    if (elements.textOutput) {
+        if (state.recognizedSigns.length > 0) {
+            elements.textOutput.innerHTML = `<p>${state.recognizedSigns.join(' ')}</p>`;
+        } else {
+            elements.textOutput.innerHTML = `<p>Your recognized signs will appear here</p>`;
+        }
+    }
+}
+
+// Text-to-speech functions
+function initTextToSpeech() {
+    if ('speechSynthesis' in window) {
+        // Get available voices
+        const getVoices = () => {
+            state.availableVoices = window.speechSynthesis.getVoices();
+            populateVoiceSelect();
+        };
+        
+        // Chrome loads voices asynchronously
+        if (window.speechSynthesis.onvoiceschanged !== undefined) {
+            window.speechSynthesis.onvoiceschanged = getVoices;
+        }
+        
+        // Get voices immediately for Firefox
+        getVoices();
+        
+        // Also fetch server voices
+        fetchServerVoices();
+    } else {
+        console.warn('Text-to-speech not supported by this browser');
+        showNotification('Text-to-speech is not supported by your browser', 'warning');
+        
+        if (elements.autoSpeakToggle) {
+            elements.autoSpeakToggle.disabled = true;
+        }
+        
+        if (elements.speakButton) {
+            elements.speakButton.disabled = true;
+        }
+    }
+}
+
+// Fetch server voices
+async function fetchServerVoices() {
+    try {
+        const response = await fetch('/api/voices');
+        if (response.ok) {
+            const data = await response.json();
+            if (data.voices) {
+                populateVoiceSelect(data.voices);
             }
         }
     } catch (error) {
-        console.error('Error in processFrame:', error);
-        state.processingFrame = false;
-        if (state.processingActive) {
-            setTimeout(processFrame, 1000);
-        }
+        console.error('Error fetching voices:', error);
     }
 }
 
-// Update the UI with the received prediction
-function updatePrediction(data) {
-    if (data.prediction) {
-        document.getElementById('prediction').textContent = data.prediction;
-        if (state.textToSpeechEnabled) {
-            speak(data.prediction);
+// Populate voice select dropdown
+function populateVoiceSelect(serverVoices) {
+    if (!elements.voiceSelect) return;
+    
+    // Clear existing options
+    elements.voiceSelect.innerHTML = '';
+    
+    // Add default option
+    const defaultOption = document.createElement('option');
+    defaultOption.value = '';
+    defaultOption.textContent = 'Default Voice';
+    elements.voiceSelect.appendChild(defaultOption);
+    
+    // If we have server voices, use those
+    if (serverVoices && serverVoices.length > 0) {
+        for (const voice of serverVoices) {
+            const option = document.createElement('option');
+            option.value = voice.id;
+            option.textContent = voice.name;
+            elements.voiceSelect.appendChild(option);
+        }
+    } 
+    // Otherwise use browser voices
+    else if (state.availableVoices && state.availableVoices.length > 0) {
+        for (const voice of state.availableVoices) {
+            const option = document.createElement('option');
+            option.value = voice.name;
+            option.textContent = `${voice.name} (${voice.lang})`;
+            elements.voiceSelect.appendChild(option);
         }
     }
-    if (data.confidence) {
-        document.getElementById('confidence').textContent = 
-            `Confidence: ${(data.confidence * 100).toFixed(1)}%`;
-    }
-    if (data.status === 'no_hand') {
-        document.getElementById('prediction').textContent = 'No hand detected';
-        document.getElementById('confidence').textContent = '';
-    }
     
-    // Reset retry count on successful frame processing
-    state.retryCount = 0;
+    // Show the select
+    elements.voiceSelect.style.display = 'block';
+}
+
+// Set TTS voice
+async function setVoice(voiceId) {
+    if (!voiceId) return;
     
-    // If there's a valid prediction
-    if (data.prediction && data.confidence > state.confidenceThreshold) {
-        // Update confidence bar
-        const confidencePercent = Math.round(data.confidence * 100);
-        confidenceBarElement.style.width = `${confidencePercent}%`;
-        confidenceValueElement.textContent = `${confidencePercent}%`;
+    try {
+        const response = await fetch(`/api/voices/${voiceId}`, {
+            method: 'POST'
+        });
         
-        // Check if prediction changed
-        const newPrediction = data.prediction !== state.currentRecognition.text;
-        
-        // Update current recognition
-        state.currentRecognition = {
-            text: data.prediction,
-            confidence: data.confidence,
-            time: Date.now()
-        };
-        
-        // Update prediction display with animation if changed
-        if (newPrediction) {
-            predictionElement.textContent = data.prediction;
-            predictionElement.classList.add('highlight');
-            
-            // Remove highlight animation after it completes
-            setTimeout(() => {
-                predictionElement.classList.remove('highlight');
-            }, 300);
-            
-            // Add to recognized text
-            addToRecognizedText(data.prediction);
-            
-            // Speak the text if auto-speak is enabled
-            if (autoSpeakCheckbox.checked) {
-                speakText(data.prediction);
-            }
+        if (!response.ok) {
+            throw new Error(`Server returned ${response.status}`);
         }
-    } else {
-        // Reset if no prediction or low confidence
-        if (data.prediction === null) {
-            predictionElement.textContent = '-';
-            confidenceBarElement.style.width = '0%';
-            confidenceValueElement.textContent = '0%';
-            
-            // Clear current recognition after some time with no detection
-            if (Date.now() - state.currentRecognition.time > 1000) {
-                state.currentRecognition.text = null;
-            }
-        }
-    }
-    
-    // Update the image
-    if (data.image && state.showHandLandmarks) {
-        const img = new Image();
-        img.onload = () => {
-            const ctx = canvasElement.getContext('2d');
-            ctx.drawImage(img, 0, 0, canvasElement.width, canvasElement.height);
-        };
-        img.src = data.image;
+        
+        console.log(`Voice set to ${voiceId}`);
+    } catch (error) {
+        console.error('Error setting voice:', error);
+        showNotification('Error setting voice. Using browser TTS instead.', 'warning');
     }
 }
 
-// Add recognized text to the display
-function addToRecognizedText(text) {
-    // Check if the last item is the same as the new text
-    if (state.recognizedText.length > 0 && state.recognizedText[state.recognizedText.length - 1] === text) {
-        // Don't add duplicates
-        return;
-    }
+// Speak text
+async function speakText(text) {
+    if (!text) return;
     
-    // Add the text
-    state.recognizedText.push(text);
-    
-    // Update the display
-    updateTextDisplay();
-}
-
-// Update the text display
-function updateTextDisplay() {
-    textDisplayElement.textContent = state.recognizedText.join('');
-}
-
-// Speak the given text
-function speakText(text) {
-    // Use the backend TTS (already handled by the server)
-    // This function is just for completeness
-}
-
-// Speak the current text in the text display
-function speakCurrentText() {
-    const text = textDisplayElement.textContent;
-    if (text) {
-        // Send a request to speak the entire text
-        fetch('/api/speak', {
+    try {
+        // Try server-side TTS first
+        const response = await fetch('/api/speak', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
+                'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ text }),
-        }).catch(error => {
-            console.error('Error requesting text-to-speech:', error);
+            body: JSON.stringify({ text })
         });
+        
+        if (!response.ok) {
+            throw new Error('Server TTS failed');
+        }
+    } catch (error) {
+        console.warn('Server TTS failed, using browser TTS:', error);
+        
+        // Fallback to browser TTS
+        if ('speechSynthesis' in window) {
+            const utterance = new SpeechSynthesisUtterance(text);
+            
+            // Set voice if selected
+            if (state.selectedVoice) {
+                const voice = state.availableVoices.find(v => v.name === state.selectedVoice);
+                if (voice) {
+                    utterance.voice = voice;
+                }
+            }
+            
+            window.speechSynthesis.speak(utterance);
+        }
     }
 }
 
-// Load available TTS voices
-function loadAvailableVoices() {
-    if (!state.systemStatus.ttsLoaded) {
-        voiceSelectElement.innerHTML = '<option value="">Text-to-speech not available</option>';
-        return;
-    }
+// Show notification
+function showNotification(message, type = 'info') {
+    const notification = document.createElement('div');
+    notification.className = `notification ${type}`;
+    notification.innerHTML = message;
     
-    fetch('/api/voices')
-        .then(response => response.json())
-        .then(data => {
-            if (data.voices && data.voices.length > 0) {
-                // Clear the select element
-                voiceSelectElement.innerHTML = '';
-                
-                // Add voices to the select element
-                data.voices.forEach(voice => {
-                    const option = document.createElement('option');
-                    option.value = voice.id;
-                    option.textContent = voice.name;
-                    voiceSelectElement.appendChild(option);
-                });
-            } else {
-                voiceSelectElement.innerHTML = '<option value="">No voices available</option>';
-            }
-        })
-        .catch(error => {
-            console.error('Error loading voices:', error);
-            voiceSelectElement.innerHTML = '<option value="">Error loading voices</option>';
-        });
+    elements.notifications.appendChild(notification);
+    
+    // Remove notification after 5 seconds
+    setTimeout(() => {
+        notification.style.opacity = '0';
+        setTimeout(() => {
+            notification.remove();
+        }, 300);
+    }, 5000);
 }
 
-// Set the TTS voice
-function setVoice(voiceId) {
-    fetch(`/api/voices/${voiceId}`, {
-        method: 'POST',
-    })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                console.log(`Voice set to: ${voiceId}`);
-            } else if (data.error) {
-                console.error('Error setting voice:', data.error);
-                showWarning(`Error setting voice: ${data.error}`);
-            }
-        })
-        .catch(error => {
-            console.error('Error setting voice:', error);
-            showWarning(`Error setting voice: ${error.message}`);
-        });
-}
-
-// Initialize when the page loads
+// Initialize on page load
 document.addEventListener('DOMContentLoaded', init);

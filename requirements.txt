@@ -23,6 +23,9 @@ tensorflow
 onnx
 tf2onnx
 
+# Desktop UI
+pillow
+
 # Text to Speech
 pyttsx3
 
